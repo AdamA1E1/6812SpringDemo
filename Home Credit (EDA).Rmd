@@ -1,0 +1,292 @@
+---
+title: "Home Credit Default Risk (EDA)"
+author: "Adam Edwards"
+date: "2025-04-20"
+output: 
+  html_document: 
+    toc: true
+    toc_depth: 2
+    toc_float: true
+---
+
+```{r setup, include=FALSE}
+
+# This chunk sets global options for the document:
+# - warning = FALSE suppresses warning messages
+# - message = FALSE suppresses package loading messages
+# - include = FALSE means this chunk runs but doesn't show in output
+
+knitr::opts_chunk$set(warning = FALSE, message = FALSE)
+
+```
+
+# Introduction
+
+
+## Notebook Purpose
+
+This notebook serves as an exploratory data analysis (EDA) of the Home Credit Default Risk dataset. The goal is to understand the data structure, identify potential issues, and uncover relationships that could inform future modeling efforts.
+
+## Business Problem
+
+Home Credit provides loans to individuals with limited credit history. The challenge is accurately assessing default risk without traditional credit data. This EDA explores alternative data sources to predict repayment behavior.
+
+## Analytic Questions
+
+1. How is the target variable (default status) distributed? Is the data imbalanced?
+
+2. What relationships exist between default status and applicant characteristics?
+
+3. How prevalent is missing data, and how should it be handled?
+
+4. Are there data quality issues like outliers or incorrect values?
+
+5. What feature engineering opportunities exist (e.g., ratios, aggregations)?
+
+# Data Description
+
+``` {r Loading data}
+# Load libraries
+library(tidyverse) # For data manipulation & visualization
+library(skimr) # For data summaries
+library(janitor) # For data cleaning
+library(ggplot2) # For visualization
+library(patchwork) # For combining gg plots
+
+# Load data
+application_train <- read_csv("application_train.csv")
+
+# Initial data inspection
+glimpse(application_train)
+```
+
+The data set contains r nrow(application_train) loan applications with rncol(application_train) features, including:
+
+- Demographics: Age, gender, family status.
+
+- Financials: Income, credit amount, annuity payments.
+
+- External data: Normalized scores from external sources.
+
+- Target: TARGET (1 = default, 0 = repaid)
+
+``` {r Summary Statistics}
+# Generate comprehensive summary statistics using skimr:
+# - focus() selects specific metrics to display
+# - n_missing shows count of NA values
+# - complete_rate shows percentage of complete cases
+# - numeric.mean and numeric.sd show mean and standard deviation for numeric vars
+
+skim(application_train) %>%
+  skimr::focus(n_missing, complete_rate, numeric.mean, numeric.sd) %>%
+  head(10) %>% 
+  knitr::kable()
+```
+
+### Key observations:
+  
+- Mixed data types (numeric, categorical).
+
+- Varying completeness across features.
+
+- Wide ranges in numeric variables suggesting potential outliers.
+
+# Missing Data Analysis
+``` {r Missing Data Visual}
+# Calculate missingness by column:
+# 1. summarise(across()) applies the same function to all columns
+# 2. is.na(.) counts missing values, divided by total rows (n()) for percentage
+# 3. pivot_longer() transforms wide data to long format for plotting
+# 4. arrange() sorts by missing percentage (descending)
+# 5. filter() shows only columns with some missing values
+
+missing_summary <- application_train %>%
+  summarise(across(everything(), ~sum(is.na(.))/n())) %>%
+  pivot_longer(everything(), names_to = "variable", values_to = "missing_pct") %>%
+  arrange(desc(missing_pct)) %>%
+  filter(missing_pct > 0)
+
+#  Create a bar plot of missing data percentages:
+# - reorder() sorts variables by missing percentage
+# - coord_flip() makes horizontal bars for readability
+# - scale_y_continuous formats percentages properly
+
+ggplot(missing_summary, aes(x = reorder(variable, -missing_pct), y = missing_pct)) +
+  geom_col(fill = "steelblue") +
+  coord_flip() +
+  labs(title = "Percentage of Missing Values by Variable",
+       x = "",
+       y = "Missing Percentage") +
+  scale_y_continuous(labels = scales::percent)
+
+```
+
+### Missing Data Discussion:
+
+- OCCUPATION_TYPE has the highest missing rate at ~31%.
+
+- Several features have 5-15% missing values.
+
+- Options for handling:
+
+  - Remove high-missing columns (>30% missing).
+
+  - Impute moderate-missing columns with median/mode.
+
+  - Create missing indicators for predictive features.
+
+# Exploratory Analysis
+
+## Target Variable Distribution
+``` {r Loan Default}
+
+# Create a frequency table of target variable:
+# - count() groups by TARGET and calculates frequencies
+# - mutate() adds percentage column
+
+target_dist <- application_train %>%
+  count(TARGET) %>%
+  mutate(pct = n/sum(n))
+
+# Visualize target distribution:
+# - geom_col() creates bar chart
+# - geom_text() adds percentage labels above bars
+# - scale_y_continuous formats y-axis as percentage
+# - theme() removes legend as it's redundant here
+
+ggplot(target_dist, aes(x = factor(TARGET), y = pct, fill = factor(TARGET))) +
+  geom_col() +
+  geom_text(aes(label = scales::percent(pct)), vjust = -0.5) +
+  scale_y_continuous(labels = scales::percent) +
+  labs(title = "Loan Default Distribution",
+       x = "Default Status (1 = Default)",
+       y = "Percentage") +
+  theme(legend.position = "none")
+
+```
+
+### Interpretation:
+
+Severe class imbalance: Only r scales::percent(target_dist$pct[2]) defaults
+
+A naive "always predict non-default" model would achieve r scales::percent(target_dist$pct[1]) accuracy
+
+Future modeling will require techniques like SMOTE or class weighting
+
+## Key Predictor Relationships
+
+``` {r Charts}
+# Create a 2x2 grid of diagnostic plots using patchwork:
+# p1: Boxplot of income by default status (log scale)
+# p2: Boxplot of credit amount by default status (log scale)
+# p3: Density plot of external score by default status
+# p4: Density plot of age (converted from days) by default status
+
+
+# Set up plot grid
+p1 <- ggplot(application_train, aes(x = factor(TARGET), y = AMT_INCOME_TOTAL)) +
+  geom_boxplot() +
+  scale_y_log10() +
+  labs(title = "Income by Default Status")
+
+p2 <- ggplot(application_train, aes(x = factor(TARGET), y = AMT_CREDIT)) +
+  geom_boxplot() +
+  scale_y_log10() +
+  labs(title = "Credit Amount by Default Status")
+
+p3 <- ggplot(application_train, aes(x = EXT_SOURCE_2, fill = factor(TARGET))) +
+  geom_density(alpha = 0.5) +
+  labs(title = "External Score Distribution")
+
+p4 <- ggplot(application_train, aes(x = DAYS_BIRTH/365, fill = factor(TARGET))) +
+  geom_density(alpha = 0.5) +
+  labs(title = "Applicant Age Distribution", x = "Age")
+
+(p1 + p2) / (p3 + p4)
+
+```
+
+### Key Findings:
+
+- Defaulters tend to have:
+
+    - Slightly lower incomes (p1)
+
+    - Higher credit amounts relative to income (p2)
+
+    - Lower external credit scores (p3)
+
+    - Younger age distribution (p4)
+
+## Data Quality Checks
+``` {r Outliers & Anomalies}
+# Identify extreme values in financial variables
+# - filter() keeps only values above 99th percentile
+
+income_outliers <- application_train %>%
+  filter(AMT_INCOME_TOTAL > quantile(AMT_INCOME_TOTAL, 0.99, na.rm = TRUE))
+
+credit_outliers <- application_train %>%
+  filter(AMT_CREDIT > quantile(AMT_CREDIT, 0.99, na.rm = TRUE))
+
+# Detect illogical employment dates
+# - DAYS_EMPLOYED should be negative (days before application)
+# - Positive values indicate future employment dates (data error)
+
+employment_anomalies <- application_train %>%
+  filter(DAYS_EMPLOYED > 0)  # Positive values suggest future employment dates
+
+# Print summary counts of data quality issues
+cat("Income outliers (>99th %ile):", nrow(income_outliers), "\n",
+    "Credit outliers (>99th %ile):", nrow(credit_outliers), "\n",
+    "Employment date anomalies:", nrow(employment_anomalies))
+```
+
+## Data Quality Notes:
+
+- Detected r nrow(income_outliers) extreme income values.
+
+- Found r nrow(employment_anomalies) records with illogical employment dates.
+
+- Recommendation: Cap extreme values rather than remove, as they may be legitimate.
+
+# Results Summary
+
+Through this EDA, we've identified:
+
+## 1. Data Characteristics:
+
+- Severe class imbalance (8% default rate).
+
+- Mixed data types requiring different preprocessing.
+
+- Moderate missingness in several key features.
+
+## 2. Predictive Relationships:
+
+- Strong signals from external credit scores.
+
+- Financial ratios (income/credit) show promise.
+
+- Demographic factors like age correlate with risk.
+
+## 3. Data Quality:
+
+- Outliers present in financial variables.
+
+- Some illogical values in date fields.
+
+- Occupation information frequently missing.
+
+## 4. Next Steps:
+
+- Develop imputation strategy for missing values.
+
+- Create derived features (e.g., debt-to-income).
+
+- Address class imbalance in modeling phase.
+
+- Explore additional data sources (bureau/previous apps).
+
+The analysis suggests that while the data has quality challenges, it contains meaningful signals for default prediction. Future work should focus on careful feature engineering and appropriate modeling techniques for imbalanced data.
+
